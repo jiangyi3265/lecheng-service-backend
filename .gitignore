@@ -68,6 +68,8 @@ settings.xml
 /ruoyi-admin/src/main/resources/application-druid.yml
 /sql/*.sql
 !/sql/schema.example.sql
+!/sql/lecheng_business.sql
+!/sql/lecheng_seed.sql
 /doc/
 *.class
 *.jar

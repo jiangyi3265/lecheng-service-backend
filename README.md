@@ -6,7 +6,7 @@
 
 基于 RuoYi-Vue 3.9.1，采用 Maven 多模块结构。当前代码包含登录与验证码、用户、角色、菜单、部门、岗位、字典、参数、通知、操作日志、登录日志、在线用户、缓存和服务器监控等能力，为 `lecheng-service-admin` 提供管理接口。
 
-当前目录经过框架裁剪：`ruoyi-quartz`、`ruoyi-generator` 源码仍保留，但已从父 POM 和启动模块依赖中停用；初始化 SQL 的菜单数据也经过精简。尚无乐城药械、医院、专家、保险、订单及支付的专用业务接口，用户端联调属于后续工作。
+当前目录经过框架裁剪：`ruoyi-quartz`、`ruoyi-generator` 源码仍保留，但已从父 POM 和启动模块依赖中停用。新增乐城内容发布、客服留言、预约咨询申请、反馈处理，以及独立的小程序微信登录接口。这里的预约只是咨询申请，不是医院号源或挂号；保险、订单和支付尚无业务接口。
 
 ## 技术栈
 
@@ -25,7 +25,7 @@
 | lecheng-service-admin | Web 管理后台 | [lecheng-service-admin](https://github.com/jiangyi3265/lecheng-service-admin) |
 | lecheng-service | UniApp 用户端 / 微信小程序 / H5 | [lecheng-service](https://github.com/jiangyi3265/lecheng-service) |
 
-三个仓库同属乐城服务项目。管理后台采用后端的若依接口约定；用户端当前使用本地示例数据，尚未接入该后端。仓库关联不代表医疗、订单、支付或预约接口已实现。用户端保留原有仓库名称和地址。
+三个仓库同属乐城服务项目。管理后台通过若依鉴权处理乐城业务，小程序通过 `/open/lecheng` 获取内容并提交留言、预约咨询申请和反馈。微信登录另经 `/auth` 接口。用户端保留原有仓库名称和地址。
 
 ## 快速启动
 
@@ -45,10 +45,14 @@ PowerShell 可将 `cp` 换为 `Copy-Item`。已有本地配置时直接复用，
 | `TOKEN_SECRET` | 自行生成的高强度随机签名密钥，必须设置；例如使用密码管理器生成至少 64 位随机十六进制文本 |
 | `REDIS_HOST`、`REDIS_PASSWORD` | 默认本机 Redis，密码按本地服务配置 |
 | `UPLOAD_PATH` | 上传目录，默认 `./uploads` |
+| `LECHENG_WECHAT_APP_ID`、`LECHENG_WECHAT_APP_SECRET` | 微信小程序登录凭据，仅在服务端设置；未设置时登录返回 503 |
+| `LECHENG_WECHAT_API_BASE` | 微信接口地址，默认官方地址；仅本地模拟测试时覆盖 |
 
 在 IDE 的运行环境或当前终端中设置以上变量；Spring Boot 不会自动加载 `.env`。Druid 管理控制台在公开模板中默认关闭。
 
 新环境须创建空的开发数据库，然后在同一个 MySQL 会话中导入 `sql/schema.example.sql`。该文件包含删表语句，只用于全新开发数据库。导入前，将你自选密码经项目的 `SecurityUtils.encryptPassword`（BCrypt）生成的哈希设置到会话变量 `@admin_password_hash`，再运行 `SOURCE sql/schema.example.sql;`。模板保留管理员账号 `admin`，不附带共享默认密码或真实账号资料。新建用户的初始密码参数为空，需要管理员在本地自行配置。
+
+随后在目标库执行 `sql/lecheng_business.sql` 建表并建立运营菜单；如需预览数据，再执行 `sql/lecheng_seed.sql`。这两个脚本不删除现有业务表。管理员需要重新登录，动态菜单才会出现。
 
 ```bash
 mvn clean package
@@ -56,6 +60,8 @@ java -jar ruoyi-admin/target/ruoyi-admin.jar
 ```
 
 默认 HTTP 端口为 `8080`，管理后台开发代理转发到此端口。需要先完成数据库、Redis 与密钥配置。`mvn clean package` 会构建父 POM 中启用的模块；不要在父聚合项目直接假设存在可运行的 Spring Boot 主类。
+
+本机接口回归：设置 `LC_QA_ADMIN_PASS` 为当前本地管理员密码，运行 `scripts/qa-lecheng.ps1`；微信登录链路可用 `node scripts/qa-auth.mjs` 对本地模拟微信接口测试。后一脚本需要已构建的 JAR、本地测试库和未占用的 `18082` 端口。
 
 ## 项目结构
 
@@ -66,7 +72,7 @@ ruoyi-system/      用户、角色、部门等系统业务及 Mapper
 ruoyi-common/      公共实体、工具、注解及异常处理
 ruoyi-quartz/      保留的定时任务模块（未启用）
 ruoyi-generator/   保留的代码生成模块（未启用）
-sql/              无凭据初始化模板；原始 SQL 仅本地保留
+sql/              初始化模板及乐城业务表、示例数据
 bin/              原有开发脚本
 ```
 

@@ -13,6 +13,13 @@ ruoyi:
   # 验证码类型 math 数字计算 char 字符验证
   captchaType: math
 
+# 小程序微信凭据只能从服务端环境变量读取。
+lecheng:
+  wechat:
+    app-id: ${LECHENG_WECHAT_APP_ID:}
+    app-secret: ${LECHENG_WECHAT_APP_SECRET:}
+    api-base: ${LECHENG_WECHAT_API_BASE:https://api.weixin.qq.com}
+
 # 开发环境配置
 server:
   # 服务器的HTTP端口，默认为8080
