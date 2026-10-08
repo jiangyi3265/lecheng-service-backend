@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import com.alibaba.fastjson2.JSON;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpMethod;
@@ -102,7 +103,8 @@ public class LechengAuthController {
     }
 
     private Map<?, ?> getWechat(String url) {
-        try { return http.getForObject(url, Map.class); }
+        // jscode2session 成功时返回 Content-Type: text/plain，按字符串取回再解析 JSON
+        try { return JSON.parseObject(http.getForObject(url, String.class)); }
         catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "微信认证服务暂不可用", e); }
     }
 
