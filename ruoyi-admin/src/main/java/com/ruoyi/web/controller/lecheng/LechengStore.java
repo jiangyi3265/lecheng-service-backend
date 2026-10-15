@@ -25,11 +25,17 @@ import org.springframework.transaction.annotation.Transactional;
 public class LechengStore {
     private static final Pattern PHONE = Pattern.compile("^1\\d{10}$");
     private static final Pattern SESSION_ID = Pattern.compile("^[0-9a-f]{64}$");
-    private static final List<String> KINDS = Arrays.asList("hospital", "resource", "project", "news", "doctor", "policy", "about", "support");
+    private static final List<String> KINDS = Arrays.asList("hospital", "resource", "project", "news", "doctor", "policy", "about", "support",
+        "banner", "benefit", "process", "guide");
     /** Kinds whose title field is "title"; all other kinds use "name". */
-    private static final List<String> TITLE_KINDS = Arrays.asList("news", "policy", "about");
+    private static final List<String> TITLE_KINDS = Arrays.asList("news", "policy", "about", "banner", "benefit", "process");
     /** The customer-service settings are a single record. */
     private static final String SUPPORT_ID = "support-settings";
+    /** The park-guide (map location) settings are a single record. */
+    private static final String GUIDE_ID = "park-guide";
+    /** Customer-service phone shown on the "我的" page: digits, spaces, + - ( ) and 转 (extension). */
+    private static final Pattern CONTACT_PHONE = Pattern.compile("^[0-9 +()\\-转]*$");
+    private static final Pattern DECIMAL = Pattern.compile("^-?\\d{1,3}(\\.\\d{1,15})?$");
     private static final String UPSERT_USER_READ = "INSERT INTO lc_consult_read(session_hash,user_read_id,admin_read_id) VALUES (?,?,0) "
         + "ON DUPLICATE KEY UPDATE user_read_id=GREATEST(user_read_id,?)";
     private static final String UPSERT_ADMIN_READ = "INSERT INTO lc_consult_read(session_hash,user_read_id,admin_read_id) VALUES (?,0,?) "
@@ -92,6 +98,7 @@ public class LechengStore {
         String kind = text(input.get("kindCode"), 30, "分类");
         if (!KINDS.contains(kind)) throw new IllegalArgumentException("未知内容分类");
         if ("support".equals(kind) && !SUPPORT_ID.equals(id)) throw new IllegalArgumentException("客服设置编号无效");
+        if ("guide".equals(kind) && !GUIDE_ID.equals(id)) throw new IllegalArgumentException("园区导航编号无效");
         String title = text(input.get(TITLE_KINDS.contains(kind) ? "title" : "name"), 200, "标题");
         String status = "0".equals(input.get("status")) ? "0" : "1";
         int order = input.get("sortOrder") instanceof Number ? ((Number) input.get("sortOrder")).intValue() : 0;
@@ -99,7 +106,8 @@ public class LechengStore {
         input.put("id", id);
         input.put("status", status);
         input.put("sortOrder", order);
-        if (!"support".equals(kind)) input.putIfAbsent("scene", 0);
+        // Single-record settings have no fallback drawing.
+        if (!"support".equals(kind) && !"guide".equals(kind)) input.putIfAbsent("scene", 0);
         if ("hospital".equals(kind)) {
             input.putIfAbsent("tags", Collections.emptyList());
             input.putIfAbsent("departments", Collections.emptyList());
@@ -147,6 +155,32 @@ public class LechengStore {
             input.put("caption", optionalText(input.get("caption"), 100, "顶部标题"));
             input.put("greeting", optionalText(input.get("greeting"), 500, "开场白"));
             input.put("hours", optionalText(input.get("hours"), 100, "在线时间"));
+            // Contact panel on the "我的" page; empty means the mini program keeps its bundled text (phone: "待更新").
+            input.put("contactHours", optionalText(input.get("contactHours"), 50, "客服在线时间"));
+            input.put("contactAddress", optionalText(input.get("contactAddress"), 200, "联系地址"));
+            String contactPhone = optionalText(input.get("contactPhone"), 30, "客服电话");
+            if (!CONTACT_PHONE.matcher(contactPhone).matches()) throw new IllegalArgumentException("客服电话格式无效");
+            input.put("contactPhone", contactPhone);
+        }
+        if ("banner".equals(kind)) {
+            input.putIfAbsent("subtitle", "");
+            input.putIfAbsent("coverImage", "");
+        }
+        if ("benefit".equals(kind) || "process".equals(kind)) {
+            input.putIfAbsent("summary", "");
+            input.putIfAbsent("coverImage", "");
+            input.putIfAbsent("paragraphs", Collections.emptyList());
+        }
+        if ("benefit".equals(kind)) input.putIfAbsent("period", "");
+        if ("guide".equals(kind)) {
+            // Empty texts are allowed: the mini program then shows its bundled park-guide texts.
+            input.put("title", optionalText(input.get("title"), 100, "园区名称"));
+            input.put("address", optionalText(input.get("address"), 200, "地址"));
+            input.put("note", optionalText(input.get("note"), 300, "说明"));
+            input.put("markerName", optionalText(input.get("markerName"), 30, "地图标记文字"));
+            // GCJ-02 (WeChat / Tencent / AMap); the ranges roughly cover China.
+            input.put("latitude", coordinate(input.get("latitude"), 3, 54));
+            input.put("longitude", coordinate(input.get("longitude"), 73, 136));
         }
         if ("doctor".equals(kind)) {
             String hospitalId = text(input.get("hospitalId"), 80, "所属医院 ID");
@@ -365,6 +399,16 @@ public class LechengStore {
         String string = value instanceof String ? ((String) value).trim() : "";
         if (string.isEmpty() || string.length() > max) throw new IllegalArgumentException(label + "不能为空或超过 " + max + " 字");
         return string;
+    }
+
+    /** A number, or a numeric string, inside [min, max]; rounded to 6 decimals (about 0.1 m). */
+    private static double coordinate(Object value, double min, double max) {
+        double number;
+        if (value instanceof Number) number = ((Number) value).doubleValue();
+        else if (value instanceof String && DECIMAL.matcher(((String) value).trim()).matches()) number = Double.parseDouble(((String) value).trim());
+        else throw new IllegalArgumentException("坐标无效");
+        if (!(number >= min && number <= max)) throw new IllegalArgumentException("坐标无效");
+        return Math.round(number * 1e6) / 1e6;
     }
 
     /** Like text(), but empty is allowed (null and missing become ""). */
