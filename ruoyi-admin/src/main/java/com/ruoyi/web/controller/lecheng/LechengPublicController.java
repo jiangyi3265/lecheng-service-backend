@@ -36,6 +36,18 @@ public class LechengPublicController {
         return AjaxResult.success(store.addMessage(store.requireSession(token), "user", input.get("text")));
     }
 
+    /** Unread operator replies: {count, lastId}. */
+    @GetMapping("/messages/unread")
+    public AjaxResult unread(@RequestHeader("X-Lecheng-Session") String token) {
+        return AjaxResult.success(store.userUnread(store.requireSession(token)));
+    }
+
+    /** Body {lastId}: marks replies up to lastId as read and returns the remaining {count, lastId}. */
+    @PostMapping("/messages/read")
+    public AjaxResult read(@RequestHeader("X-Lecheng-Session") String token, @RequestBody(required = false) Map<String, Object> input) {
+        return AjaxResult.success(store.markUserRead(store.requireSession(token), input == null ? null : input.get("lastId")));
+    }
+
     @GetMapping("/appointments")
     public AjaxResult appointments(@RequestHeader("X-Lecheng-Session") String token) {
         return AjaxResult.success(store.appointments(store.requireSession(token)));

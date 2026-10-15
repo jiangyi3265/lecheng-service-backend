@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS lc_message (
   KEY idx_lc_message_thread (session_hash, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Read pointers per conversation: last message id seen by the guest (user_read_id) and by the operators (admin_read_id).
+CREATE TABLE IF NOT EXISTS lc_consult_read (
+  session_hash CHAR(64) NOT NULL PRIMARY KEY,
+  user_read_id BIGINT NOT NULL DEFAULT 0,
+  admin_read_id BIGINT NOT NULL DEFAULT 0,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS lc_appointment (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   session_hash CHAR(64) NOT NULL,

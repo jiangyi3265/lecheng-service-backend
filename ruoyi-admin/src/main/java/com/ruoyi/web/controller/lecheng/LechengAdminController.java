@@ -42,14 +42,23 @@ public class LechengAdminController {
     @GetMapping("/consultations")
     public AjaxResult consultations() { return AjaxResult.success(store.conversations()); }
 
+    /** Totals for the sidebar badge: {count, sessions}. */
+    @PreAuthorize("@ss.hasPermi('lecheng:consult:list')")
+    @GetMapping("/consultations/unread")
+    public AjaxResult unread() { return AjaxResult.success(store.adminUnread()); }
+
     @PreAuthorize("@ss.hasPermi('lecheng:consult:list')")
     @GetMapping("/consultations/{sessionId}")
     public AjaxResult messages(@PathVariable String sessionId) { return AjaxResult.success(store.messages(sessionId)); }
 
+    @PreAuthorize("@ss.hasPermi('lecheng:consult:list')")
+    @PostMapping("/consultations/{sessionId}/read")
+    public AjaxResult read(@PathVariable String sessionId) { return AjaxResult.success(store.markAdminRead(sessionId)); }
+
     @PreAuthorize("@ss.hasPermi('lecheng:consult:reply')")
     @PostMapping("/consultations/{sessionId}/reply")
     public AjaxResult reply(@PathVariable String sessionId, @RequestBody Map<String, String> input) {
-        return AjaxResult.success(store.addMessage(sessionId, "assistant", input.get("text")));
+        return AjaxResult.success(store.reply(sessionId, input.get("text")));
     }
 
     @PreAuthorize("@ss.hasPermi('lecheng:booking:list')")

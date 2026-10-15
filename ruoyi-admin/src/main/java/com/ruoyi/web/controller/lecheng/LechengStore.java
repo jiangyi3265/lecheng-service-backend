@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -17,12 +18,22 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Persistent Lecheng data. Guest session tokens are opaque and stored only as hashes. */
 @Service
 public class LechengStore {
     private static final Pattern PHONE = Pattern.compile("^1\\d{10}$");
-    private static final List<String> KINDS = Arrays.asList("hospital", "resource", "project", "news", "doctor");
+    private static final Pattern SESSION_ID = Pattern.compile("^[0-9a-f]{64}$");
+    private static final List<String> KINDS = Arrays.asList("hospital", "resource", "project", "news", "doctor", "policy", "about", "support");
+    /** Kinds whose title field is "title"; all other kinds use "name". */
+    private static final List<String> TITLE_KINDS = Arrays.asList("news", "policy", "about");
+    /** The customer-service settings are a single record. */
+    private static final String SUPPORT_ID = "support-settings";
+    private static final String UPSERT_USER_READ = "INSERT INTO lc_consult_read(session_hash,user_read_id,admin_read_id) VALUES (?,?,0) "
+        + "ON DUPLICATE KEY UPDATE user_read_id=GREATEST(user_read_id,?)";
+    private static final String UPSERT_ADMIN_READ = "INSERT INTO lc_consult_read(session_hash,user_read_id,admin_read_id) VALUES (?,0,?) "
+        + "ON DUPLICATE KEY UPDATE admin_read_id=GREATEST(admin_read_id,?)";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final SecureRandom random = new SecureRandom();
@@ -80,14 +91,15 @@ public class LechengStore {
         String id = text(input.get("id"), 80, "内容 ID");
         String kind = text(input.get("kindCode"), 30, "分类");
         if (!KINDS.contains(kind)) throw new IllegalArgumentException("未知内容分类");
-        String title = text(input.get(kind.equals("news") ? "title" : "name"), 200, "标题");
+        if ("support".equals(kind) && !SUPPORT_ID.equals(id)) throw new IllegalArgumentException("客服设置编号无效");
+        String title = text(input.get(TITLE_KINDS.contains(kind) ? "title" : "name"), 200, "标题");
         String status = "0".equals(input.get("status")) ? "0" : "1";
         int order = input.get("sortOrder") instanceof Number ? ((Number) input.get("sortOrder")).intValue() : 0;
         if (order < 0 || order > 100000) throw new IllegalArgumentException("排序值无效");
         input.put("id", id);
         input.put("status", status);
         input.put("sortOrder", order);
-        input.putIfAbsent("scene", 0);
+        if (!"support".equals(kind)) input.putIfAbsent("scene", 0);
         if ("hospital".equals(kind)) {
             input.putIfAbsent("tags", Collections.emptyList());
             input.putIfAbsent("departments", Collections.emptyList());
@@ -111,6 +123,31 @@ public class LechengStore {
             input.putIfAbsent("paragraphs", Collections.emptyList());
             input.putIfAbsent("date", "");
         }
+        if ("policy".equals(kind)) {
+            input.putIfAbsent("tags", Collections.emptyList());
+            input.putIfAbsent("summary", "");
+            input.putIfAbsent("paragraphs", Collections.emptyList());
+            input.putIfAbsent("date", "");
+            input.putIfAbsent("fullTitle", "");
+            input.putIfAbsent("sourceName", "");
+            input.putIfAbsent("sourceUrl", "");
+            input.putIfAbsent("coverImage", "");
+        }
+        if ("about".equals(kind)) {
+            input.putIfAbsent("paragraphs", Collections.emptyList());
+            input.putIfAbsent("caption", "");
+            input.putIfAbsent("coverImage", "");
+        }
+        if ("support".equals(kind)) {
+            // Empty values are allowed: the mini program then falls back to its bundled avatar and default texts.
+            String avatar = optionalText(input.get("avatar"), 500, "客服头像");
+            if (!avatar.isEmpty() && !avatar.startsWith("http://") && !avatar.startsWith("https://") && !avatar.startsWith("/"))
+                throw new IllegalArgumentException("客服头像地址无效，请重新上传图片");
+            input.put("avatar", avatar);
+            input.put("caption", optionalText(input.get("caption"), 100, "顶部标题"));
+            input.put("greeting", optionalText(input.get("greeting"), 500, "开场白"));
+            input.put("hours", optionalText(input.get("hours"), 100, "在线时间"));
+        }
         if ("doctor".equals(kind)) {
             String hospitalId = text(input.get("hospitalId"), 80, "所属医院 ID");
             List<Map<String, Object>> hospitals = jdbc.queryForList(
@@ -133,8 +170,9 @@ public class LechengStore {
     public int deleteContent(String id) { return jdbc.update("DELETE FROM lc_content WHERE id=?", id); }
 
     public List<Map<String, Object>> messages(String session) {
-        return jdbc.queryForList("SELECT id,sender AS role,body AS text,UNIX_TIMESTAMP(created_at)*1000 AS time "
-            + "FROM lc_message WHERE session_hash=? ORDER BY id LIMIT 500", session);
+        // 取最新的 500 条再按时间正序返回，长会话也能看到最新回复（未读标记才能清掉）
+        return jdbc.queryForList("SELECT id,role,text,time FROM (SELECT id,sender AS role,body AS text,"
+            + "UNIX_TIMESTAMP(created_at)*1000 AS time FROM lc_message WHERE session_hash=? ORDER BY id DESC LIMIT 500) newest ORDER BY id", session);
     }
 
     public Map<String, Object> addMessage(String session, String sender, String body) {
@@ -152,12 +190,86 @@ public class LechengStore {
             + "FROM lc_message WHERE id=?", key.getKey().longValue());
     }
 
-    public List<Map<String, Object>> conversations() {
-        return jdbc.queryForList("SELECT m.session_hash AS sessionId,MAX(m.id) AS lastId,"
-            + "(SELECT body FROM lc_message x WHERE x.session_hash=m.session_hash ORDER BY x.id DESC LIMIT 1) AS lastMessage,"
-            + "MAX(m.created_at) AS updatedAt,COUNT(*) AS messageCount "
-            + "FROM lc_message m GROUP BY m.session_hash ORDER BY lastId DESC LIMIT 200");
+    /** Admin reply; replying counts as having read the conversation. */
+    @Transactional
+    public Map<String, Object> reply(String sessionId, String body) {
+        requireConversation(sessionId);
+        Map<String, Object> message = addMessage(sessionId, "assistant", body);
+        long id = ((Number) message.get("id")).longValue();
+        jdbc.update(UPSERT_ADMIN_READ, sessionId, id, id);
+        return message;
     }
+
+    /** Newest 200 conversations; unreadCount counts user messages after the operator's read pointer. */
+    public List<Map<String, Object>> conversations() {
+        return jdbc.queryForList("SELECT g.sessionId,g.lastId,l.body AS lastMessage,g.updatedAt,g.messageCount,g.unreadCount,l.sender AS lastRole "
+            + "FROM (SELECT m.session_hash AS sessionId,MAX(m.id) AS lastId,MAX(m.created_at) AS updatedAt,COUNT(*) AS messageCount,"
+            + "COUNT(CASE WHEN m.sender='user' AND m.id>COALESCE(r.admin_read_id,0) THEN 1 END) AS unreadCount "
+            + "FROM lc_message m LEFT JOIN lc_consult_read r ON r.session_hash=m.session_hash "
+            + "GROUP BY m.session_hash ORDER BY lastId DESC LIMIT 200) g "
+            + "JOIN lc_message l ON l.id=g.lastId ORDER BY g.lastId DESC");
+    }
+
+    /** Operator-side totals: unread user messages and the number of conversations that have any. */
+    public Map<String, Object> adminUnread() {
+        Map<String, Object> row = jdbc.queryForMap("SELECT COUNT(*) AS unreadCount,COUNT(DISTINCT m.session_hash) AS sessionCount "
+            + "FROM lc_message m LEFT JOIN lc_consult_read r ON r.session_hash=m.session_hash "
+            + "WHERE m.sender='user' AND m.id>COALESCE(r.admin_read_id,0)");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", number(row.get("unreadCount")));
+        result.put("sessions", number(row.get("sessionCount")));
+        return result;
+    }
+
+    /** Marks everything in the conversation as read by the operator; returns the new totals. */
+    public Map<String, Object> markAdminRead(String sessionId) {
+        long lastId = requireConversation(sessionId);
+        jdbc.update(UPSERT_ADMIN_READ, sessionId, lastId, lastId);
+        return adminUnread();
+    }
+
+    /** Mini-program side: operator replies newer than the guest's read pointer. */
+    public Map<String, Object> userUnread(String session) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT COUNT(CASE WHEN m.id>COALESCE((SELECT r.user_read_id FROM lc_consult_read r "
+            + "WHERE r.session_hash=?),0) THEN 1 END) AS unreadCount,COALESCE(MAX(m.id),0) AS maxId "
+            + "FROM lc_message m WHERE m.session_hash=? AND m.sender='assistant'", session, session);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", number(row.get("unreadCount")));
+        result.put("lastId", number(row.get("maxId")));
+        return result;
+    }
+
+    /** Moves the guest's read pointer forward (never backward, never past the newest message). */
+    public Map<String, Object> markUserRead(String session, Object lastIdInput) {
+        long wanted = positiveId(lastIdInput);
+        if (wanted > 0) {
+            long target = Math.min(wanted, lastMessageId(session));
+            if (target > 0) jdbc.update(UPSERT_USER_READ, session, target, target);
+        }
+        return userUnread(session);
+    }
+
+    private long requireConversation(String sessionId) {
+        if (sessionId == null || !SESSION_ID.matcher(sessionId).matches()) throw new IllegalArgumentException("会话不存在");
+        long lastId = lastMessageId(sessionId);
+        if (lastId == 0) throw new IllegalArgumentException("会话不存在");
+        return lastId;
+    }
+
+    private long lastMessageId(String session) {
+        Long lastId = jdbc.queryForObject("SELECT COALESCE(MAX(id),0) FROM lc_message WHERE session_hash=?", Long.class, session);
+        return lastId == null ? 0 : lastId;
+    }
+
+    private static long positiveId(Object value) {
+        if (value instanceof String && ((String) value).trim().matches("\\d{1,18}")) return Long.parseLong(((String) value).trim());
+        if (!(value instanceof Number)) return 0;
+        double asDouble = ((Number) value).doubleValue();
+        if (!(asDouble > 0)) return 0;
+        return asDouble >= Long.MAX_VALUE ? Long.MAX_VALUE : ((Number) value).longValue();
+    }
+
+    private static long number(Object value) { return value instanceof Number ? ((Number) value).longValue() : 0; }
 
     public List<Map<String, Object>> appointments(String session) {
         List<Map<String, Object>> rows = session == null
@@ -252,6 +364,15 @@ public class LechengStore {
     private String text(Object value, int max, String label) {
         String string = value instanceof String ? ((String) value).trim() : "";
         if (string.isEmpty() || string.length() > max) throw new IllegalArgumentException(label + "不能为空或超过 " + max + " 字");
+        return string;
+    }
+
+    /** Like text(), but empty is allowed (null and missing become ""). */
+    private String optionalText(Object value, int max, String label) {
+        if (value == null) return "";
+        if (!(value instanceof String)) throw new IllegalArgumentException(label + "格式无效");
+        String string = ((String) value).trim();
+        if (string.length() > max) throw new IllegalArgumentException(label + "不能超过 " + max + " 字");
         return string;
     }
 }
